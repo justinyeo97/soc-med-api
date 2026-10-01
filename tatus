@@ -1,0 +1,13 @@
+[35mnode_modules/@supabase/auth-js/dist/main/lib/types.d.ts[m[36m:[m[32m2078[m[36m:[mexport type OAuthClientTokenEndpointAuthMethod = 'none' | '[1;31mclient_secret[m_basic' | '[1;31mclient_secret[m_post';
+[35mnode_modules/@supabase/auth-js/dist/main/lib/types.d.ts[m[36m:[m[32m2089[m[36m:[m    [1;31mclient_secret[m?: string;
+[35mnode_modules/@supabase/auth-js/dist/main/lib/types.d.ts[m[36m:[m[32m2343[m[36m:[m    [1;31mclient_secret[m: string;
+[35mnode_modules/@supabase/auth-js/dist/main/lib/types.d.ts[m[36m:[m[32m2392[m[36m:[m    [1;31mclient_secret[m?: string;
+[35mnode_modules/@supabase/auth-js/dist/module/lib/types.d.ts[m[36m:[m[32m2078[m[36m:[mexport type OAuthClientTokenEndpointAuthMethod = 'none' | '[1;31mclient_secret[m_basic' | '[1;31mclient_secret[m_post';
+[35mnode_modules/@supabase/auth-js/dist/module/lib/types.d.ts[m[36m:[m[32m2089[m[36m:[m    [1;31mclient_secret[m?: string;
+[35mnode_modules/@supabase/auth-js/dist/module/lib/types.d.ts[m[36m:[m[32m2343[m[36m:[m    [1;31mclient_secret[m: string;
+[35mnode_modules/@supabase/auth-js/dist/module/lib/types.d.ts[m[36m:[m[32m2392[m[36m:[m    [1;31mclient_secret[m?: string;
+[35mnode_modules/@supabase/auth-js/src/lib/types.ts[m[36m:[m[32m2440[m[36m:[m  | '[1;31mclient_secret[m_basic'
+[35mnode_modules/@supabase/auth-js/src/lib/types.ts[m[36m:[m[32m2441[m[36m:[m  | '[1;31mclient_secret[m_post'
+[35mnode_modules/@supabase/auth-js/src/lib/types.ts[m[36m:[m[32m2453[m[36m:[m  [1;31mclient_secret[m?: string
+[35mnode_modules/@supabase/auth-js/src/lib/types.ts[m[36m:[m[32m2715[m[36m:[m  [1;31mclient_secret[m: string
+[35mnode_modules/@supabase/auth-js/src/lib/types.ts[m[36m:[m[32m2765[m[36m:[m  [1;31mclient_secret[m?: string
