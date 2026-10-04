@@ -136,6 +136,19 @@ app.post('/follow', verifySupabaseSession, async (req, res) => {
   return res.status(201).json({ message: 'Followed successfully' });
 });
 
+app.get('/follow', verifySupabaseSession, async (req, res) => {
+  const follower_id = req.auth.id;
+
+  const { data, error } = await supabase
+    .from('friendships')
+    .select('followed_id, users!friendships_followed_id_fkey(id, username)')
+    .eq('follower_id', follower_id);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  return res.json(data);
+});
+
 
 app.get('/friends', verifySupabaseSession, async (req, res) => {
   const userId = req.user.userId;
