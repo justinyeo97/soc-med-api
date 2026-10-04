@@ -135,14 +135,14 @@ app.get('/friends', verifySupabaseSession, async (req, res) => {
 
   const query = `
     SELECT u.id, u.username, a.email
-FROM users u
-JOIN auth.users a ON a.id = u.id
-WHERE u.id IN (
-  SELECT followed_id FROM friendships WHERE follower_id = $1
-  INTERSECT
-  SELECT follower_id FROM friendships WHERE followed_id = $1
-)
-ORDER BY u.username
+    FROM users u
+    JOIN auth.users a ON a.id = u.id
+    WHERE u.id IN (  
+    SELECT followed_id FROM friendships WHERE follower_id = $1
+    INTERSECT
+    SELECT follower_id FROM friendships WHERE followed_id = $1
+  )
+  ORDER BY u.username
   `;
 
   try {
