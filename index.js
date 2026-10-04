@@ -77,6 +77,7 @@ async function verifySupabaseSession(req, res, next) {
 
   if (error || !data.user) return res.status(401).end();
 
+  req.auth = { id: data.user.id };
   req.user = {
     userId: data.user.id,
     email: data.user.email,
@@ -95,38 +96,44 @@ app.get("/whoami", verifySupabaseSession, (req, res) => {
 })
 
 
-app.post('/friend', verifySupabaseSession, async (req, res) => {
-  const { follower_id, followed_id } = req.body;
+app.post('/follow', verifySupabaseSession, async (req, res) => {
+  const follower_id = req.auth.id;
+  const { followed_id } = req.body;
 
-  // Verify both users exist (optional but good):
-
-  const follower = await supabase.from('users').select('id').eq('id', follower_id).single();
-  const followed = await supabase.from('users').select('id').eq('id', followed_id).single();
-
-  if (!follower.data || !followed.data) {
-    return res.status(400).json({ error: 'User not found' });
+  if (typeof followed_id !== 'string' || !followed_id) {
+    return res.status(400).json({ error: 'followed_id is required' });
   }
 
-  // Check friendship doesn’t already exist:
+  if (followed_id === follower_id) {
+    return res.status(400).json({ error: 'You cannot follow yourself' });
+  }
 
-  const existing = await supabase
+  const { data: followed, error: userError } = await supabase
+    .from('users')
+    .select('id')
+    .eq('id', followed_id)
+    .maybeSingle();
+
+  if (userError) return res.status(500).json({ error: userError.message });
+  if (!followed) return res.status(404).json({ error: 'User not found' });
+
+  const { data: existing, error: followCheckError } = await supabase
     .from('friendships')
-    .select('*')
+    .select('follower_id')
     .eq('follower_id', follower_id)
     .eq('followed_id', followed_id)
-    .single();
+    .maybeSingle();
 
-  if (existing.data) {
-    return res.status(400).json({ error: 'Already friends' });
-  }
+  if (followCheckError) return res.status(500).json({ error: followCheckError.message });
+  if (existing) return res.status(409).json({ error: 'Already following this user' });
 
-  // Insert new friendship:
+  const { error: insertError } = await supabase
+    .from('friendships')
+    .insert({ follower_id, followed_id });
 
-  const { error } = await supabase.from('friendships').insert([{ follower_id, followed_id }]);
+  if (insertError) return res.status(500).json({ error: insertError.message });
 
-  if (error) return res.status(500).json({ error: error.message });
-
-  return res.status(201).json({ message: 'Followed!' });
+  return res.status(201).json({ message: 'Followed successfully' });
 });
 
 
