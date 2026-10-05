@@ -208,7 +208,7 @@ app.get('/posts', verifySupabaseSession, async (req, res) => {
         OR p.author_id IN (
           SELECT followed_id FROM friendships WHERE follower_id = $1
           INTERSECT
-          SELECT follower_id FROM friendships WHERE followed_id = $1
+          SELECT follower_id FROM friendships WHERE followed_id = 1$
         )
       )
     )
