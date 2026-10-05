@@ -10,8 +10,8 @@ app.use(cors());
 const rateLimit = require('express-rate-limit')
 
 const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: 1 * 60 * 1000,
+  max: 100,
   message: 'Too many requests, please try again later.',
 })
 app.use(limiter);
@@ -46,7 +46,7 @@ app.post("/auth/signup", async (req, res) => {
     return res.status(400).json({ error: "Signup did not return a user" });
   }
 
-  // The profile table has an id foreign key to auth.users and a username column.
+
   const { error: dbError } = await supabase
     .from("users")
     .insert({ id: data.user.id, username });
@@ -137,12 +137,10 @@ app.post('/follow', verifySupabaseSession, async (req, res) => {
 });
 
 app.get('/follow', verifySupabaseSession, async (req, res) => {
-  const follower_id = req.auth.id;
-
   const { data, error } = await supabase
     .from('friendships')
-    .select('followed_id, users!friendships_followed_id_fkey(id, username)')
-    .eq('follower_id', follower_id);
+    .select('followed_id')
+    .eq('follower_id', req.auth.id);
 
   if (error) return res.status(500).json({ error: error.message });
 
