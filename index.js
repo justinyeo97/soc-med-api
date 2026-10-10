@@ -4,7 +4,8 @@ const express = require("express");
 const path = require("path");
 const app = express();
 const cors = require("cors");
-const { supabase } = require("./supabaseClient");
+const { supabase, createUserClient } = require("./supabaseClient");
+const multer = require('multer');
 app.use(express.json());
 app.use(cors());
 const rateLimit = require('express-rate-limit')
@@ -15,6 +16,18 @@ const limiter = rateLimit({
   message: 'Too many requests, please try again later.',
 })
 app.use(limiter);
+
+const uploadPostImage = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => {
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.mimetype)) {
+      return cb(new Error('Only JPEG, PNG, WebP, and GIF images are allowed'));
+    }
+    cb(null, true);
+  },
+}).single('image');
+const postImageBucket = process.env.SUPABASE_POST_IMAGES_BUCKET || 'post-images';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -172,28 +185,62 @@ app.get('/friends', verifySupabaseSession, async (req, res) => {
   }
 });
 
-app.post('/posts', verifySupabaseSession, async (req, res) => {
+app.post('/posts', verifySupabaseSession, (req, res, next) => {
+  uploadPostImage(req, res, (error) => error ? next(error) : next());
+}, async (req, res) => {
   const { title, content, visibility } = req.body;
   const author_id = req.user.userId;
 
   const validVisibilities = ['public', 'friends'];
-  const postVisibility = validVisibilities.includes(visibility) ? visibility : 'public';
-
-  if (!content) {
+  if (typeof title !== 'string' || !title.trim()) {
+    return res.status(400).json({ error: 'Title is required' });
+  }
+  if (typeof content !== 'string' || !content.trim()) {
     return res.status(400).json({ error: 'Content is required' });
   }
+  if (!validVisibilities.includes(visibility)) {
+    return res.status(400).json({ error: 'Visibility must be either public or friends' });
+  }
 
-  const { error } = await supabase.from('posts').insert([{ author_id, title, content, visibility: postVisibility }]);
+  const { data: post, error } = await supabase.from('posts')
+    .insert([{ author_id, title: title.trim(), content: content.trim(), visibility }])
+    .select('id, author_id, title, content, visibility, created_at')
+    .single();
   if (error) return res.status(500).json({ error: error.message });
 
-  res.status(201).json({ message: 'Post created', visibility: postVisibility });
+  let imagePath = null;
+  if (req.file) {
+    const extension = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' })[req.file.mimetype];
+    imagePath = `${author_id}/${post.id}.${extension}`;
+    const userSupabase = createUserClient(req.headers.authorization.slice(7));
+    const { error: uploadError } = await userSupabase.storage.from(postImageBucket).upload(imagePath, req.file.buffer, {
+      contentType: req.file.mimetype,
+      upsert: false,
+    });
+    if (uploadError) {
+      await supabase.from('posts').delete().eq('id', post.id);
+      return res.status(400).json({ error: `Image upload failed: ${uploadError.message}` });
+    }
+
+    const { error: updateError } = await supabase.from('posts').update({ image_path: imagePath }).eq('id', post.id);
+    if (updateError) {
+      await userSupabase.storage.from(postImageBucket).remove([imagePath]);
+      await supabase.from('posts').delete().eq('id', post.id);
+      return res.status(500).json({ error: updateError.message });
+    }
+  }
+
+  return res.status(201).json({
+    message: 'Post created',
+    post: { ...post, image_path: imagePath },
+  });
 });
 
 app.get('/posts', verifySupabaseSession, async (req, res) => {
   const userId = req.user.userId;
 
   const baseQuery = `
-    SELECT p.id, p.author_id, u.username AS author, p.title, p.content, p.visibility, p.created_at
+    SELECT p.id, p.author_id, u.username AS author, p.title, p.content, p.visibility, p.image_path, p.created_at
     FROM posts p
     JOIN users u ON u.id = p.author_id
   `;
@@ -218,11 +265,28 @@ app.get('/posts', verifySupabaseSession, async (req, res) => {
 
   try {
     const { rows } = await pool.query(finalQuery, [userId]);
-    res.json(rows);
+    const userSupabase = createUserClient(req.headers.authorization.slice(7));
+    const posts = await Promise.all(rows.map(async (post) => {
+      if (!post.image_path) return { ...post, image_url: null };
+      const { data, error } = await userSupabase.storage.from(postImageBucket)
+        .createSignedUrl(post.image_path, 60 * 60);
+      if (error) throw error;
+      return { ...post, image_url: data.signedUrl };
+    }));
+    res.json(posts);
   } catch (err) {
     console.error('Error running posts query:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: err.message });
+  }
+  if (err.message?.startsWith('Only JPEG')) return res.status(415).json({ error: err.message });
+  console.error('Request error:', err);
+  return res.status(500).json({ error: 'Internal server error' });
 });
 
 app.listen(3000, () => {
