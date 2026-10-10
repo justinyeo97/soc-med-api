@@ -82,22 +82,45 @@ app.post("/auth/login", async (req, res) => {
 });
 
 async function verifySupabaseSession(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).end();
+  const [scheme, token] = (req.headers.authorization || '').split(' ');
+  if (scheme?.toLowerCase() !== 'bearer' || !token) {
+    return res.status(401).json({ error: 'A Supabase access token is required' });
+  }
 
-  const token = auth.split(" ")[1];
+  // OAuth providers (including Google) return a Supabase session. Verify its
+  // access token with Supabase Auth rather than trusting client-supplied claims.
   const { data, error } = await supabase.auth.getUser(token);
 
   if (error || !data.user) return res.status(401).end();
+
+  // OAuth sign-ins do not pass through /auth/signup, so create the app profile
+  // on first authenticated API request. Preserve profiles created earlier.
+  try {
+    const name = data.user.user_metadata?.full_name
+      || data.user.user_metadata?.name
+      || data.user.user_metadata?.user_name
+      || data.user.email?.split('@')[0]
+      || 'user';
+    const baseUsername = name.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24) || 'user';
+    const username = `${baseUsername}_${data.user.id.replace(/-/g, '').slice(0, 8)}`;
+    await pool.query(
+      'INSERT INTO public.users (id, username) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING',
+      [data.user.id, username],
+    );
+  } catch (err) {
+    console.error('Error creating authenticated user profile:', err);
+    return res.status(500).json({ error: 'Could not initialize user profile' });
+  }
 
   req.auth = { id: data.user.id };
   req.user = {
     userId: data.user.id,
     email: data.user.email,
     role: data.user.app_metadata?.role || "user",
+    provider: data.user.app_metadata?.provider || 'email',
   };
 
-  next();
+  return next();
 }
 
 app.get("/whoami", verifySupabaseSession, (req, res) => {
@@ -105,6 +128,7 @@ app.get("/whoami", verifySupabaseSession, (req, res) => {
     userId: req.user.userId,
     email: req.user.email,
     role: req.user.role,
+    provider: req.user.provider,
   });
 })
 
