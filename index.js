@@ -123,6 +123,88 @@ async function verifySupabaseSession(req, res, next) {
   return next();
 }
 
+function parseRunInput(input) {
+  if (input === undefined || input === null || input === '') return null;
+  let run = input;
+  if (typeof run === 'string') {
+    try {
+      run = JSON.parse(run);
+    } catch {
+      throw new Error('run must be a JSON object');
+    }
+  }
+  if (!run || typeof run !== 'object' || Array.isArray(run)) {
+    throw new Error('run must be an object');
+  }
+
+  const startedAt = new Date(run.started_at);
+  const distanceM = Number(run.distance_m);
+  const elapsedSeconds = Number(run.elapsed_seconds);
+  const movingSeconds = run.moving_seconds === undefined || run.moving_seconds === null || run.moving_seconds === ''
+    ? null : Number(run.moving_seconds);
+  const elevationGainM = run.elevation_gain_m === undefined || run.elevation_gain_m === null || run.elevation_gain_m === ''
+    ? null : Number(run.elevation_gain_m);
+  const averageHeartRate = run.average_heart_rate === undefined || run.average_heart_rate === null || run.average_heart_rate === ''
+    ? null : Number(run.average_heart_rate);
+  const maxHeartRate = run.max_heart_rate === undefined || run.max_heart_rate === null || run.max_heart_rate === ''
+    ? null : Number(run.max_heart_rate);
+
+  if (!run.started_at || Number.isNaN(startedAt.getTime())) throw new Error('run.started_at must be a valid date');
+  if (!Number.isInteger(distanceM) || distanceM <= 0) throw new Error('run.distance_m must be a positive integer');
+  if (!Number.isInteger(elapsedSeconds) || elapsedSeconds <= 0) throw new Error('run.elapsed_seconds must be a positive integer');
+  if (movingSeconds !== null && (!Number.isInteger(movingSeconds) || movingSeconds < 0 || movingSeconds > elapsedSeconds)) {
+    throw new Error('run.moving_seconds must be an integer between 0 and elapsed_seconds');
+  }
+  if (elevationGainM !== null && (!Number.isFinite(elevationGainM) || elevationGainM < 0)) {
+    throw new Error('run.elevation_gain_m must be a non-negative number');
+  }
+  for (const [name, value] of [['average_heart_rate', averageHeartRate], ['max_heart_rate', maxHeartRate]]) {
+    if (value !== null && (!Number.isInteger(value) || value < 1 || value > 250)) {
+      throw new Error(`run.${name} must be an integer between 1 and 250`);
+    }
+  }
+  if (averageHeartRate !== null && maxHeartRate !== null && maxHeartRate < averageHeartRate) {
+    throw new Error('run.max_heart_rate cannot be lower than average_heart_rate');
+  }
+
+  const source = run.source === undefined || run.source === '' ? 'manual' : run.source;
+  if (typeof source !== 'string' || source.length > 50) throw new Error('run.source must be a string of at most 50 characters');
+  if (run.external_id !== undefined && run.external_id !== null && typeof run.external_id !== 'string') {
+    throw new Error('run.external_id must be a string');
+  }
+  if (run.title !== undefined && run.title !== null && typeof run.title !== 'string') {
+    throw new Error('run.title must be a string');
+  }
+
+  return {
+    title: run.title?.trim() || null,
+    startedAt: startedAt.toISOString(),
+    distanceM,
+    elapsedSeconds,
+    movingSeconds,
+    elevationGainM,
+    averageHeartRate,
+    maxHeartRate,
+    source,
+    externalId: run.external_id || null,
+  };
+}
+
+async function insertRun({ userId, postId = null, visibility, run }) {
+  const { rows } = await pool.query(
+    `INSERT INTO public.runs (
+       user_id, post_id, title, started_at, distance_m, elapsed_seconds,
+       moving_seconds, elevation_gain_m, average_heart_rate, max_heart_rate,
+       source, external_id, visibility
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     RETURNING *`,
+    [userId, postId, run.title, run.startedAt, run.distanceM, run.elapsedSeconds,
+      run.movingSeconds, run.elevationGainM, run.averageHeartRate, run.maxHeartRate,
+      run.source, run.externalId, visibility],
+  );
+  return rows[0];
+}
+
 app.get("/whoami", verifySupabaseSession, (req, res) => {
   res.json({
     userId: req.user.userId,
@@ -184,6 +266,79 @@ app.get('/follow', verifySupabaseSession, async (req, res) => {
   return res.json(data);
 });
 
+app.post('/runs', verifySupabaseSession, async (req, res) => {
+  let run;
+  try {
+    run = parseRunInput(req.body.run ?? req.body);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+  if (!run) return res.status(400).json({ error: 'Run information is required' });
+
+  const requestedVisibility = req.body.visibility;
+  if (requestedVisibility !== undefined && !['public', 'friends', 'private'].includes(requestedVisibility)) {
+    return res.status(400).json({ error: 'Visibility must be public, friends, or private' });
+  }
+
+  const rawPostId = req.body.post_id;
+  let postId = null;
+  let visibility = requestedVisibility || 'private';
+  if (rawPostId !== undefined && rawPostId !== null && rawPostId !== '') {
+    postId = Number(rawPostId);
+    if (!Number.isSafeInteger(postId) || postId <= 0) {
+      return res.status(400).json({ error: 'post_id must be a positive integer' });
+    }
+    try {
+      const { rows } = await pool.query(
+        'SELECT author_id, visibility FROM public.posts WHERE id = $1',
+        [postId],
+      );
+      if (!rows[0]) return res.status(404).json({ error: 'Post not found' });
+      if (rows[0].author_id !== req.user.userId) return res.status(403).json({ error: 'You can only attach a run to your own post' });
+      visibility = rows[0].visibility;
+    } catch (error) {
+      console.error('Error checking post for run:', error);
+      return res.status(500).json({ error: 'Could not validate post' });
+    }
+  }
+
+  try {
+    const runRecord = await insertRun({ userId: req.user.userId, postId, visibility, run });
+    return res.status(201).json({ run: runRecord });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'This run is already recorded or attached to another run post' });
+    console.error('Error creating run:', error);
+    return res.status(500).json({ error: 'Could not create run' });
+  }
+});
+
+app.get('/runs', verifySupabaseSession, async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const { rows } = await pool.query(
+      `SELECT r.*, u.username
+       FROM public.runs r
+       LEFT JOIN public.users u ON u.id = r.user_id
+       WHERE r.visibility = 'public'
+          OR r.user_id = $1
+          OR (
+            r.visibility = 'friends'
+            AND r.user_id IN (
+              SELECT followed_id FROM public.friendships WHERE follower_id = $1
+              INTERSECT
+              SELECT follower_id FROM public.friendships WHERE followed_id = $1
+            )
+          )
+       ORDER BY r.started_at DESC, r.id DESC`,
+      [userId],
+    );
+    return res.json(rows);
+  } catch (error) {
+    console.error('Error fetching runs:', error);
+    return res.status(500).json({ error: 'Could not fetch runs' });
+  }
+});
+
 
 app.get('/friends', verifySupabaseSession, async (req, res) => {
   const userId = req.user.userId;
@@ -214,6 +369,13 @@ app.post('/posts', verifySupabaseSession, (req, res, next) => {
 }, async (req, res) => {
   const { title, content, visibility } = req.body;
   const author_id = req.user.userId;
+  let runInput;
+
+  try {
+    runInput = parseRunInput(req.body.run);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
 
   const validVisibilities = ['public', 'friends'];
   if (typeof title !== 'string' || !title.trim()) {
@@ -226,37 +388,51 @@ app.post('/posts', verifySupabaseSession, (req, res, next) => {
     return res.status(400).json({ error: 'Visibility must be either public or friends' });
   }
 
-  const { data: post, error } = await supabase.from('posts')
+  const userSupabase = createUserClient(req.headers.authorization.slice(7));
+  const { data: post, error } = await userSupabase.from('posts')
     .insert([{ author_id, title: title.trim(), content: content.trim(), visibility }])
     .select('id, author_id, title, content, visibility, created_at')
     .single();
   if (error) return res.status(500).json({ error: error.message });
 
+  let runRecord = null;
+  if (runInput) {
+    try {
+      runRecord = await insertRun({ userId: author_id, postId: post.id, visibility, run: runInput });
+    } catch (runError) {
+      await userSupabase.from('posts').delete().eq('id', post.id);
+      if (runError.code === '23505') return res.status(409).json({ error: 'This run is already recorded' });
+      console.error('Error saving post run:', runError);
+      return res.status(500).json({ error: 'Could not save run information' });
+    }
+  }
+
   let imagePath = null;
   if (req.file) {
     const extension = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' })[req.file.mimetype];
     imagePath = `${author_id}/${post.id}.${extension}`;
-    const userSupabase = createUserClient(req.headers.authorization.slice(7));
     const { error: uploadError } = await userSupabase.storage.from(postImageBucket).upload(imagePath, req.file.buffer, {
       contentType: req.file.mimetype,
       upsert: false,
     });
     if (uploadError) {
-      await supabase.from('posts').delete().eq('id', post.id);
+      if (runRecord) await pool.query('DELETE FROM public.runs WHERE id = $1 AND user_id = $2', [runRecord.id, author_id]);
+      await userSupabase.from('posts').delete().eq('id', post.id);
       return res.status(400).json({ error: `Image upload failed: ${uploadError.message}` });
     }
 
-    const { error: updateError } = await supabase.from('posts').update({ image_path: imagePath }).eq('id', post.id);
+    const { error: updateError } = await userSupabase.from('posts').update({ image_path: imagePath }).eq('id', post.id);
     if (updateError) {
       await userSupabase.storage.from(postImageBucket).remove([imagePath]);
-      await supabase.from('posts').delete().eq('id', post.id);
+      if (runRecord) await pool.query('DELETE FROM public.runs WHERE id = $1 AND user_id = $2', [runRecord.id, author_id]);
+      await userSupabase.from('posts').delete().eq('id', post.id);
       return res.status(500).json({ error: updateError.message });
     }
   }
 
   return res.status(201).json({
     message: 'Post created',
-    post: { ...post, image_path: imagePath },
+    post: { ...post, image_path: imagePath, run: runRecord },
   });
 });
 
@@ -264,9 +440,33 @@ app.get('/posts', verifySupabaseSession, async (req, res) => {
   const userId = req.user.userId;
 
   const baseQuery = `
-    SELECT p.id, p.author_id, u.username AS author, p.title, p.content, p.visibility, p.image_path, p.created_at
+    SELECT p.id, p.author_id, u.username AS author, p.title, p.content, p.visibility, p.image_path, p.created_at,
+      CASE WHEN r.id IS NULL OR NOT (
+        r.visibility = 'public'
+        OR r.user_id = $1
+        OR (
+          r.visibility = 'friends'
+          AND r.user_id IN (
+            SELECT followed_id FROM public.friendships WHERE follower_id = $1
+            INTERSECT
+            SELECT follower_id FROM public.friendships WHERE followed_id = $1
+          )
+        )
+      ) THEN NULL ELSE jsonb_build_object(
+        'id', r.id,
+        'title', r.title,
+        'started_at', r.started_at,
+        'distance_m', r.distance_m,
+        'elapsed_seconds', r.elapsed_seconds,
+        'moving_seconds', r.moving_seconds,
+        'elevation_gain_m', r.elevation_gain_m,
+        'average_heart_rate', r.average_heart_rate,
+        'max_heart_rate', r.max_heart_rate,
+        'source', r.source
+      ) END AS run
     FROM posts p
     JOIN users u ON u.id = p.author_id
+    LEFT JOIN public.runs r ON r.post_id = p.id
   `;
 
   const whereClause = `
