@@ -36,51 +36,12 @@ const pool = new Pool({
   },
 });
 
+// Root and static page endpoint
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-app.post("/auth/signup", async (req, res) => {
-  const { username, email, password } = req.body;
-
-  if (!username || !email || !password) {
-    return res.status(400).json({ error: "Username, email, and password are required" });
-  }
-
-  const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) {
-    if (error.message.includes("already registered")) {
-      return res.status(409).json({ error: "Email already in use" });
-    }
-    return res.status(400).json({ error: error.message });
-  }
-
-  if (!data.user) {
-    return res.status(400).json({ error: "Signup did not return a user" });
-  }
-
-
-  const { error: dbError } = await supabase
-    .from("users")
-    .insert({ id: data.user.id, username });
-
-  if (dbError) {
-    console.error("DB Insert error:", dbError);
-    return res.status(500).json({ error: dbError.message });
-  }
-
-  res.status(201).json({ user: data.user });
-});
-
-app.post("/auth/login", async (req, res) => {
-  const { email, password } = req.body;
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) {
-    return res.status(401).json({ error: error.message });
-  }
-  res.json({ session: data.session });
-});
-
+// Shared authentication and run helpers
 async function verifySupabaseSession(req, res, next) {
   const [scheme, token] = (req.headers.authorization || '').split(' ');
   if (scheme?.toLowerCase() !== 'bearer' || !token) {
@@ -205,6 +166,48 @@ async function insertRun({ userId, postId = null, visibility, run }) {
   return rows[0];
 }
 
+// Authentication endpoints
+app.post("/auth/signup", async (req, res) => {
+  const { username, email, password } = req.body;
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: "Username, email, and password are required" });
+  }
+
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error) {
+    if (error.message.includes("already registered")) {
+      return res.status(409).json({ error: "Email already in use" });
+    }
+    return res.status(400).json({ error: error.message });
+  }
+
+  if (!data.user) {
+    return res.status(400).json({ error: "Signup did not return a user" });
+  }
+
+
+  const { error: dbError } = await supabase
+    .from("users")
+    .insert({ id: data.user.id, username });
+
+  if (dbError) {
+    console.error("DB Insert error:", dbError);
+    return res.status(500).json({ error: dbError.message });
+  }
+
+  res.status(201).json({ user: data.user });
+});
+
+app.post("/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) {
+    return res.status(401).json({ error: error.message });
+  }
+  res.json({ session: data.session });
+});
+
 app.get("/whoami", verifySupabaseSession, (req, res) => {
   res.json({
     userId: req.user.userId,
@@ -215,6 +218,7 @@ app.get("/whoami", verifySupabaseSession, (req, res) => {
 })
 
 
+// Social endpoints
 app.post('/follow', verifySupabaseSession, async (req, res) => {
   const follower_id = req.auth.id;
   const { followed_id } = req.body;
@@ -266,6 +270,31 @@ app.get('/follow', verifySupabaseSession, async (req, res) => {
   return res.json(data);
 });
 
+app.get('/friends', verifySupabaseSession, async (req, res) => {
+  const userId = req.user.userId;
+
+  const query = `
+    SELECT u.id, u.username, a.email
+    FROM users u
+    JOIN auth.users a ON a.id = u.id
+    WHERE u.id IN (  
+    SELECT followed_id FROM friendships WHERE follower_id = $1
+    INTERSECT
+    SELECT follower_id FROM friendships WHERE followed_id = $1
+  )
+  ORDER BY u.username
+  `;
+
+  try {
+    const { rows } = await pool.query(query, [userId]);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching friends:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Run endpoints
 app.post('/runs', verifySupabaseSession, async (req, res) => {
   let run;
   try {
@@ -340,30 +369,7 @@ app.get('/runs', verifySupabaseSession, async (req, res) => {
 });
 
 
-app.get('/friends', verifySupabaseSession, async (req, res) => {
-  const userId = req.user.userId;
-
-  const query = `
-    SELECT u.id, u.username, a.email
-    FROM users u
-    JOIN auth.users a ON a.id = u.id
-    WHERE u.id IN (  
-    SELECT followed_id FROM friendships WHERE follower_id = $1
-    INTERSECT
-    SELECT follower_id FROM friendships WHERE followed_id = $1
-  )
-  ORDER BY u.username
-  `;
-
-  try {
-    const { rows } = await pool.query(query, [userId]);
-    res.json(rows);
-  } catch (err) {
-    console.error('Error fetching friends:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
+// Post endpoints
 app.post('/posts', verifySupabaseSession, (req, res, next) => {
   uploadPostImage(req, res, (error) => error ? next(error) : next());
 }, async (req, res) => {
@@ -504,6 +510,7 @@ app.get('/posts', verifySupabaseSession, async (req, res) => {
   }
 });
 
+// Error handling and server startup
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: err.message });
