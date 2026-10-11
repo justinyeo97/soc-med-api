@@ -220,6 +220,7 @@ app.get("/whoami", verifySupabaseSession, (req, res) => {
 
 // Social endpoints
 app.post('/follow', verifySupabaseSession, async (req, res) => {
+  const userSupabase = createUserClient(req.headers.authorization.slice(7));
   const follower_id = req.auth.id;
   const { followed_id } = req.body;
 
@@ -231,7 +232,7 @@ app.post('/follow', verifySupabaseSession, async (req, res) => {
     return res.status(400).json({ error: 'You cannot follow yourself' });
   }
 
-  const { data: followed, error: userError } = await supabase
+  const { data: followed, error: userError } = await userSupabase
     .from('users')
     .select('id')
     .eq('id', followed_id)
@@ -240,7 +241,7 @@ app.post('/follow', verifySupabaseSession, async (req, res) => {
   if (userError) return res.status(500).json({ error: userError.message });
   if (!followed) return res.status(404).json({ error: 'User not found' });
 
-  const { data: existing, error: followCheckError } = await supabase
+  const { data: existing, error: followCheckError } = await userSupabase
     .from('friendships')
     .select('follower_id')
     .eq('follower_id', follower_id)
@@ -250,7 +251,7 @@ app.post('/follow', verifySupabaseSession, async (req, res) => {
   if (followCheckError) return res.status(500).json({ error: followCheckError.message });
   if (existing) return res.status(409).json({ error: 'Already following this user' });
 
-  const { error: insertError } = await supabase
+  const { error: insertError } = await userSupabase
     .from('friendships')
     .insert({ follower_id, followed_id });
 
@@ -260,7 +261,8 @@ app.post('/follow', verifySupabaseSession, async (req, res) => {
 });
 
 app.get('/follow', verifySupabaseSession, async (req, res) => {
-  const { data, error } = await supabase
+  const userSupabase = createUserClient(req.headers.authorization.slice(7));
+  const { data, error } = await userSupabase
     .from('friendships')
     .select('followed_id')
     .eq('follower_id', req.auth.id);
