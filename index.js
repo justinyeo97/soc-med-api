@@ -187,13 +187,17 @@ app.post("/auth/signup", async (req, res) => {
   }
 
 
-  const { error: dbError } = await supabase
-    .from("users")
-    .insert({ id: data.user.id, username });
-
-  if (dbError) {
+  try {
+    await pool.query(
+      'INSERT INTO public.users (id, username) VALUES ($1, $2)',
+      [data.user.id, username],
+    );
+  } catch (dbError) {
     console.error("DB Insert error:", dbError);
-    return res.status(500).json({ error: dbError.message });
+    if (dbError.code === '23505') {
+      return res.status(409).json({ error: 'Username already in use' });
+    }
+    return res.status(500).json({ error: 'Could not create user profile' });
   }
 
   res.status(201).json({ user: data.user });
